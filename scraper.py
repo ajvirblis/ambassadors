@@ -157,11 +157,9 @@ def debug_structure(soup: BeautifulSoup, slug: str) -> None:
             break
 
 
-def fetch(url: str, session: requests.Session) -> tuple[BeautifulSoup, str]:
-    response = session.get(url, headers=HEADERS, timeout=30)
-    response.raise_for_status()
-    response.encoding = response.apparent_encoding or "utf-8"
-    return BeautifulSoup(response.text, "lxml"), response.text
+def fetch(url: str, session: requests.Session) -> requests.Response:
+    response = session.get(url, headers=HEADERS, timeout=30, allow_redirects=True)
+    return response
 
 
 def scrape_all(urls: list[str] = URLS, debug: bool = False) -> list[dict]:
@@ -170,7 +168,42 @@ def scrape_all(urls: list[str] = URLS, debug: bool = False) -> list[dict]:
         for url in urls:
             slug = url.rstrip("/").split("/")[-1]
             print(f"Fetching {url} ...", file=sys.stderr)
-            soup, _ = fetch(url, session)
+
+            try:
+                response = fetch(url, session)
+            except Exception as exc:
+                print(f"  ERROR: request failed — {exc}", file=sys.stderr)
+                continue
+
+            print(f"  HTTP {response.status_code}  final URL: {response.url}",
+                  file=sys.stderr)
+
+            if response.status_code != 200:
+                print(f"  ERROR: non-200 response, skipping.", file=sys.stderr)
+                if debug:
+                    print(f"  Response body (first 2000 chars):\n{response.text[:2000]}",
+                          file=sys.stderr)
+                continue
+
+            response.encoding = response.apparent_encoding or "utf-8"
+            raw_html = response.text
+
+            if debug:
+                # Print first 3000 chars of raw HTML directly — no file needed
+                print(f"\n{'='*60}", file=sys.stderr)
+                print(f"  RAW HTML (first 3000 chars) for {slug}:", file=sys.stderr)
+                print(raw_html[:3000], file=sys.stderr)
+                print(f"{'='*60}\n", file=sys.stderr)
+
+                # Also save to file (absolute path printed so it's findable)
+                html_path = Path(slug + "_debug.html").resolve()
+                try:
+                    html_path.write_text(raw_html, encoding="utf-8")
+                    print(f"  Full HTML saved → {html_path}", file=sys.stderr)
+                except Exception as exc:
+                    print(f"  Could not save file: {exc}", file=sys.stderr)
+
+            soup = BeautifulSoup(raw_html, "lxml")
 
             if debug:
                 debug_structure(soup, slug)
