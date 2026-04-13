@@ -7,7 +7,7 @@ blocked. This scraper uses undetected-chromedriver, which patches the
 Chrome binary to remove automation signals.
 
 Requirements:
-  pip install undetected-chromedriver selenium beautifulsoup4 lxml
+  pip install undetected-chromedriver selenium beautifulsoup4 lxml certifi
   Google Chrome must be installed on the machine.
 
 Usage:
@@ -17,9 +17,25 @@ Usage:
 """
 
 import json
+import os
 import re
+import ssl
 import sys
 from dataclasses import asdict, dataclass
+
+# macOS Python (python.org installer) ships without system CA certificates.
+# Point the SSL stack at the certifi bundle before any HTTPS calls are made.
+# This fixes the SSL error that occurs when undetected-chromedriver tries to
+# download ChromeDriver from storage.googleapis.com.
+try:
+    import certifi
+    os.environ.setdefault("SSL_CERT_FILE", certifi.where())
+    os.environ.setdefault("REQUESTS_CA_BUNDLE", certifi.where())
+    ssl.create_default_context = lambda *a, **kw: ssl.create_default_context(
+        *a, cafile=certifi.where(), **kw
+    )
+except ImportError:
+    pass  # certifi not installed — will try anyway
 
 from bs4 import BeautifulSoup
 
