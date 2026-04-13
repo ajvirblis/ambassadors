@@ -128,14 +128,40 @@ def parse_table(soup: BeautifulSoup) -> list[Person]:
 # undetected-chromedriver fetch
 # ---------------------------------------------------------------------------
 
+def _chrome_major_version() -> int | None:
+    """Return the major version of the installed Chrome, or None if not found."""
+    import subprocess, shutil
+    candidates = [
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        "/Applications/Chromium.app/Contents/MacOS/Chromium",
+        shutil.which("google-chrome"),
+        shutil.which("chromium"),
+    ]
+    for path in candidates:
+        if not path:
+            continue
+        try:
+            out = subprocess.check_output([path, "--version"],
+                                          stderr=subprocess.DEVNULL, text=True)
+            # e.g. "Google Chrome 146.0.7680.180"
+            major = int(out.strip().split()[-1].split(".")[0])
+            print(f"  Detected Chrome {major}", file=sys.stderr)
+            return major
+        except Exception:
+            continue
+    return None
+
+
 def make_driver():
     import undetected_chromedriver as uc  # requires: pip install undetected-chromedriver
     options = uc.ChromeOptions()
     options.add_argument("--lang=ru-RU,ru")
     options.add_argument("--window-size=1280,900")
-    # Do NOT add headless here — uc has its own headless patching if needed,
-    # but visible mode is most reliable against F5.
-    return uc.Chrome(options=options, use_subprocess=True)
+    # version_main must match the *major* version of the installed Chrome.
+    # uc defaults to the latest ChromeDriver which may be ahead of the
+    # installed browser, causing SessionNotCreatedException.
+    version = _chrome_major_version()
+    return uc.Chrome(options=options, use_subprocess=True, version_main=version)
 
 
 def fetch_page(driver, url: str, debug: bool = False) -> list[Person]:
