@@ -1,14 +1,14 @@
 """
 Scraper for Russian MFA ambassador nomination pages.
 
-mid.ru is protected by F5 Bot Defense (TSPD/DOSL7), which detects
-headless browsers and blocks them. This scraper runs Playwright in
-*visible* (non-headless) mode so the JS fingerprinting challenge passes.
-A Chrome window opens briefly for each URL, then closes automatically.
+mid.ru is protected by F5 Bot Defense (TSPD/DOSL7), which performs deep
+browser fingerprinting. Standard Playwright/Selenium are detected and
+blocked. This scraper uses undetected-chromedriver, which patches the
+Chrome binary to remove automation signals.
 
 Requirements:
-  pip install playwright beautifulsoup4 lxml
-  playwright install chromium
+  pip install undetected-chromedriver selenium beautifulsoup4 lxml
+  Google Chrome must be installed on the machine.
 
 Usage:
   python3 scraper.py               # JSON on stdout
@@ -22,7 +22,6 @@ import sys
 from dataclasses import asdict, dataclass
 
 from bs4 import BeautifulSoup
-from playwright.sync_api import sync_playwright, TimeoutError as PWTimeoutError
 
 URLS = [
     "https://mid.ru/ru/activity/shots/persons/extraordinary_ambassador/diplomat_of_ambassador/",
@@ -30,7 +29,6 @@ URLS = [
     "https://mid.ru/ru/activity/shots/persons/extraordinary_ambassador/diplomat_of_2_class/",
 ]
 
-# Date pattern: DD.MM.YYYY
 _DATE_RE = re.compile(r"\b(\d{2}\.\d{2}\.\d{4})\b")
 
 
@@ -47,7 +45,7 @@ class Person:
 
 
 # ---------------------------------------------------------------------------
-# HTML parsing helpers
+# HTML parsing helpers (unchanged)
 # ---------------------------------------------------------------------------
 
 def cell_text(cell) -> str:
@@ -55,11 +53,6 @@ def cell_text(cell) -> str:
 
 
 def parse_name_cell(cell) -> tuple[str, str, str]:
-    """
-    Name cell contains up to three <p> tags (family / given / patronymic).
-    Each <p> may contain an invisible <span> index marker — strip those first.
-    Falls back to splitting the plain cell text when no <p> tags are present.
-    """
     parts: list[str] = []
     for p in cell.find_all("p"):
         for span in p.find_all("span"):
@@ -116,38 +109,44 @@ def parse_table(soup: BeautifulSoup) -> list[Person]:
 
 
 # ---------------------------------------------------------------------------
-# Playwright fetch — visible browser bypasses F5 bot detection
+# undetected-chromedriver fetch
 # ---------------------------------------------------------------------------
 
-def fetch_page(url: str, page, debug: bool = False) -> list[Person]:
+def make_driver():
+    import undetected_chromedriver as uc  # requires: pip install undetected-chromedriver
+    options = uc.ChromeOptions()
+    options.add_argument("--lang=ru-RU,ru")
+    options.add_argument("--window-size=1280,900")
+    # Do NOT add headless here — uc has its own headless patching if needed,
+    # but visible mode is most reliable against F5.
+    return uc.Chrome(options=options, use_subprocess=True)
+
+
+def fetch_page(driver, url: str, debug: bool = False) -> list[Person]:
     print(f"Fetching {url} ...", file=sys.stderr)
+    driver.get(url)
 
-    # First navigation — may land on the F5 challenge page
-    page.goto(url, wait_until="domcontentloaded", timeout=60_000)
-
-    # The F5 JS challenge runs, sets a TS cookie, then redirects to the real
-    # page. We wait until a <table> with <td> cells is present, which signals
-    # that the real content has loaded.
+    # Wait up to 45 s for the real table to appear after the F5 challenge
     try:
-        page.wait_for_selector("table td", timeout=30_000)
-    except PWTimeoutError:
-        # Sometimes the challenge triggers a full navigation; wait for it.
-        try:
-            page.wait_for_load_state("networkidle", timeout=20_000)
-            page.wait_for_selector("table td", timeout=15_000)
-        except PWTimeoutError:
-            print("  WARNING: table not found after 65 s — page may still be "
-                  "showing bot challenge.", file=sys.stderr)
+        from selenium.webdriver.common.by import By
+        from selenium.webdriver.support import expected_conditions as EC
+        from selenium.webdriver.support.ui import WebDriverWait
+        WebDriverWait(driver, 45).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, "table td"))
+        )
+    except Exception:
+        print("  WARNING: table not found within 45 s.", file=sys.stderr)
 
-    html = page.content()
-    soup = BeautifulSoup(html, "lxml")
+    soup = BeautifulSoup(driver.page_source, "lxml")
     persons = parse_table(soup)
 
     if debug:
         tables = soup.find_all("table")
         rows5 = [r for r in soup.find_all("tr") if len(r.find_all("td")) == 5]
-        print(f"  [debug] <table>: {len(tables)}  "
-              f"rows with 5 <td>: {len(rows5)}", file=sys.stderr)
+        print(
+            f"  [debug] <table>: {len(tables)}  rows with 5 <td>: {len(rows5)}",
+            file=sys.stderr,
+        )
 
     print(f"  → {len(persons)} persons found", file=sys.stderr)
     return persons
@@ -159,39 +158,16 @@ def fetch_page(url: str, page, debug: bool = False) -> list[Person]:
 
 def scrape_all(urls: list[str] = URLS, debug: bool = False) -> list[dict]:
     all_persons: list[Person] = []
-
-    with sync_playwright() as pw:
-        # headless=False: runs a real visible browser window.
-        # F5 Bot Defense fingerprints the browser environment — a visible
-        # Chromium passes checks that headless Chromium fails.
-        browser = pw.chromium.launch(
-            headless=False,
-            args=["--disable-blink-features=AutomationControlled"],
-        )
-        context = browser.new_context(
-            locale="ru-RU",
-            user_agent=(
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/124.0.0.0 Safari/537.36"
-            ),
-            viewport={"width": 1280, "height": 900},
-        )
-        # Remove the 'navigator.webdriver' property that reveals automation
-        context.add_init_script(
-            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
-        )
-
-        page = context.new_page()
-
+    driver = make_driver()
+    try:
         for url in urls:
             try:
-                persons = fetch_page(url, page, debug=debug)
+                persons = fetch_page(driver, url, debug=debug)
                 all_persons.extend(persons)
             except Exception as exc:
                 print(f"  ERROR on {url}: {exc}", file=sys.stderr)
-
-        browser.close()
+    finally:
+        driver.quit()
 
     return [asdict(p) for p in all_persons]
 
