@@ -1,10 +1,10 @@
 """
 Scraper for Russian MFA ambassador nomination pages.
 
-mid.ru is protected by F5 Bot Defense (TSPD/DOSL7), which serves a JS
-challenge page to plain HTTP clients. This scraper uses Playwright — a
-real headless browser — to execute the challenge and retrieve the actual
-page content.
+mid.ru is protected by F5 Bot Defense (TSPD/DOSL7), which detects
+headless browsers and blocks them. This scraper runs Playwright in
+*visible* (non-headless) mode so the JS fingerprinting challenge passes.
+A Chrome window opens briefly for each URL, then closes automatically.
 
 Requirements:
   pip install playwright beautifulsoup4 lxml
@@ -79,10 +79,6 @@ def parse_name_cell(cell) -> tuple[str, str, str]:
 
 
 def split_rank_and_date(raw: str) -> tuple[str, str]:
-    """
-    'ЧРЕЗВЫЧАЙНЫЙ И ПОЛНОМОЧНЫЙ ПОСОЛ 28.12.2021'
-    → ('ЧРЕЗВЫЧАЙНЫЙ И ПОЛНОМОЧНЫЙ ПОСОЛ', '28.12.2021')
-    """
     m = _DATE_RE.search(raw)
     if m:
         return raw[: m.start()].strip(), m.group(1)
@@ -104,7 +100,7 @@ def parse_table(soup: BeautifulSoup) -> list[Person]:
         diplomatic_rank, rank_acquisition_date = split_rank_and_date(rank_raw)
 
         if not family_name and not dob:
-            continue  # skip header-like rows
+            continue
 
         persons.append(Person(
             family_name=family_name,
@@ -120,28 +116,28 @@ def parse_table(soup: BeautifulSoup) -> list[Person]:
 
 
 # ---------------------------------------------------------------------------
-# Playwright-based fetch (handles F5 Bot Defense JS challenge)
+# Playwright fetch — visible browser bypasses F5 bot detection
 # ---------------------------------------------------------------------------
 
-def fetch_with_playwright(url: str, page, debug: bool = False) -> list[Person]:
+def fetch_page(url: str, page, debug: bool = False) -> list[Person]:
     print(f"Fetching {url} ...", file=sys.stderr)
 
-    try:
-        page.goto(url, wait_until="networkidle", timeout=60_000)
-    except PWTimeoutError:
-        # networkidle can time out on heavy pages; try domcontentloaded instead
-        print("  networkidle timed out, retrying with domcontentloaded ...",
-              file=sys.stderr)
-        page.goto(url, wait_until="domcontentloaded", timeout=60_000)
-        # give JS challenge extra time to complete and reload
-        page.wait_for_timeout(5_000)
+    # First navigation — may land on the F5 challenge page
+    page.goto(url, wait_until="domcontentloaded", timeout=60_000)
 
-    # Wait until at least one <td> appears (real page), up to 30 s
+    # The F5 JS challenge runs, sets a TS cookie, then redirects to the real
+    # page. We wait until a <table> with <td> cells is present, which signals
+    # that the real content has loaded.
     try:
-        page.wait_for_selector("td", timeout=30_000)
+        page.wait_for_selector("table td", timeout=30_000)
     except PWTimeoutError:
-        print("  WARNING: no <td> found after waiting 30 s — "
-              "challenge may not have resolved.", file=sys.stderr)
+        # Sometimes the challenge triggers a full navigation; wait for it.
+        try:
+            page.wait_for_load_state("networkidle", timeout=20_000)
+            page.wait_for_selector("table td", timeout=15_000)
+        except PWTimeoutError:
+            print("  WARNING: table not found after 65 s — page may still be "
+                  "showing bot challenge.", file=sys.stderr)
 
     html = page.content()
     soup = BeautifulSoup(html, "lxml")
@@ -149,9 +145,9 @@ def fetch_with_playwright(url: str, page, debug: bool = False) -> list[Person]:
 
     if debug:
         tables = soup.find_all("table")
-        rows_with_5td = [r for r in soup.find_all("tr") if len(r.find_all("td")) == 5]
+        rows5 = [r for r in soup.find_all("tr") if len(r.find_all("td")) == 5]
         print(f"  [debug] <table>: {len(tables)}  "
-              f"rows with 5 <td>: {len(rows_with_5td)}", file=sys.stderr)
+              f"rows with 5 <td>: {len(rows5)}", file=sys.stderr)
 
     print(f"  → {len(persons)} persons found", file=sys.stderr)
     return persons
@@ -165,7 +161,13 @@ def scrape_all(urls: list[str] = URLS, debug: bool = False) -> list[dict]:
     all_persons: list[Person] = []
 
     with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=True)
+        # headless=False: runs a real visible browser window.
+        # F5 Bot Defense fingerprints the browser environment — a visible
+        # Chromium passes checks that headless Chromium fails.
+        browser = pw.chromium.launch(
+            headless=False,
+            args=["--disable-blink-features=AutomationControlled"],
+        )
         context = browser.new_context(
             locale="ru-RU",
             user_agent=(
@@ -173,12 +175,18 @@ def scrape_all(urls: list[str] = URLS, debug: bool = False) -> list[dict]:
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
                 "Chrome/124.0.0.0 Safari/537.36"
             ),
+            viewport={"width": 1280, "height": 900},
         )
+        # Remove the 'navigator.webdriver' property that reveals automation
+        context.add_init_script(
+            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+        )
+
         page = context.new_page()
 
         for url in urls:
             try:
-                persons = fetch_with_playwright(url, page, debug=debug)
+                persons = fetch_page(url, page, debug=debug)
                 all_persons.extend(persons)
             except Exception as exc:
                 print(f"  ERROR on {url}: {exc}", file=sys.stderr)
