@@ -71,7 +71,8 @@ def test_parse_name_cell():
 
 def test_parse_table_two_persons():
     soup = BeautifulSoup(SAMPLE_TABLE, "lxml")
-    persons = parse_table(soup)
+    url = "https://example.com/test"
+    persons = parse_table(soup, source_url=url)
     assert len(persons) == 2, f"Expected 2 persons, got {len(persons)}"
 
     p = persons[0]
@@ -83,10 +84,12 @@ def test_parse_table_two_persons():
     assert "ПОСОЛ РОССИЙСКОЙ ФЕДЕРАЦИИ" in p.position
     assert p.diplomatic_rank == "ЧРЕЗВЫЧАЙНЫЙ И ПОЛНОМОЧНЫЙ ПОСОЛ"
     assert p.rank_acquisition_date == "28.12.2021"
+    assert p.source_url == url
 
     p2 = persons[1]
     assert p2.family_name == "ИВАНОВ"
     assert p2.rank_acquisition_date == "15.03.2018"
+    assert p2.source_url == url
 
 
 def test_json_output_structure():
@@ -96,7 +99,7 @@ def test_json_output_structure():
     from scraper import parse_table
 
     soup = BeautifulSoup(SAMPLE_TABLE, "lxml")
-    persons = parse_table(soup)
+    persons = parse_table(soup, source_url="https://example.com/test")
     data = [asdict(p) for p in persons]
     blob = json.dumps(data, ensure_ascii=False)
     loaded = json.loads(blob)
@@ -104,6 +107,7 @@ def test_json_output_structure():
     required_keys = {
         "family_name", "name", "patronymic", "dob",
         "department", "position", "diplomatic_rank", "rank_acquisition_date",
+        "source_url",
     }
     for record in loaded:
         assert required_keys == set(record.keys()), set(record.keys())

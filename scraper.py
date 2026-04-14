@@ -58,6 +58,7 @@ class Person:
     position: str
     diplomatic_rank: str
     rank_acquisition_date: str
+    source_url: str
 
 
 # ---------------------------------------------------------------------------
@@ -94,7 +95,7 @@ def split_rank_and_date(raw: str) -> tuple[str, str]:
     return raw, ""
 
 
-def parse_table(soup: BeautifulSoup) -> list[Person]:
+def parse_table(soup: BeautifulSoup, source_url: str = "") -> list[Person]:
     persons: list[Person] = []
     for row in soup.find_all("tr"):
         cells = row.find_all("td")
@@ -120,6 +121,7 @@ def parse_table(soup: BeautifulSoup) -> list[Person]:
             position=position,
             diplomatic_rank=diplomatic_rank,
             rank_acquisition_date=rank_acquisition_date,
+            source_url=source_url,
         ))
     return persons
 
@@ -180,7 +182,7 @@ def fetch_page(driver, url: str, debug: bool = False) -> list[Person]:
         print("  WARNING: table not found within 45 s.", file=sys.stderr)
 
     soup = BeautifulSoup(driver.page_source, "lxml")
-    persons = parse_table(soup)
+    persons = parse_table(soup, source_url=url)
 
     if debug:
         tables = soup.find_all("table")
