@@ -6,7 +6,7 @@ from config import (
     DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD
 )
 
-JSON_FILE = 'ambassadors.json'
+JSON_FILE = 'ambassadors_w_urls.json'
 ACTUALITY_DATE = '2026-04-06'
 
 with open(JSON_FILE, encoding='utf-8') as f:
