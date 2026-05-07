@@ -3,3 +3,4 @@ __pycache__/
 *.pyo
 config.py
 config_replica.py
+claude_context_diplomats.md
