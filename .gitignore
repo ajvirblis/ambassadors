@@ -4,3 +4,5 @@ __pycache__/
 config.py
 config_replica.py
 claude_context_diplomats.md
+*.sql
+
